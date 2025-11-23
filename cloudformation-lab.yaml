@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CloudFormation Lab - VPC, EC2, S3 Bucket, Lambda Trigger
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+    Description: EC2 instance type
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-04b70fa74e45c3917
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: LabVPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+
+  # --------------------
+  # IAM Role for Lambda
+  # --------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # --------------------
+  # Lambda Function
+  # --------------------
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: LabS3TriggerFunction
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              print("S3 Trigger Event:", event)
+
+  # --------------------
+  # S3 Bucket WITH Lambda Trigger
+  # --------------------
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "sahillab-${AWS::AccountId}-bucket"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !GetAtt LambdaFunction.Arn
+      Tags:
+        - Key: Name
+          Value: sahillab-bucket
+
+  # --------------------
+  # Lambda Permission (NO circular dependency)
+  # --------------------
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:aws:s3:::sahillab-${AWS::AccountId}-bucket"
+
+  # --------------------
+  # EC2 Instance
+  # --------------------
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      Tags:
+        - Key: Name
+          Value: LabEC2
+
+Outputs:
+  VPCId:
+    Value: !Ref VPC
+  EC2InstanceId:
+    Value: !Ref EC2Instance
+  S3BucketName:
+    Value: !Ref S3Bucket
+  LambdaArn:
+    Value: !GetAtt LambdaFunction.Arn
